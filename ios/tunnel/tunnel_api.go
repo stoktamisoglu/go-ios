@@ -276,18 +276,25 @@ func (m *TunnelManager) UpdateTunnels(ctx context.Context) error {
 			d.UserspaceTUNPort = ios.HttpApiPort() + m.portOffset
 			m.portOffset++
 		}
-		t, err := m.startTunnel(ctx, d)
+		version, err := ios.GetProductVersion(d)
 		if err != nil {
-			log.WithField("udid", udid).
-				WithError(err).
-				Warn("failed to start tunnel")
-			continue
+			return fmt.Errorf("startTunnel: failed to get device version: %w", err)
 		}
-		m.mux.Lock()
-		localTunnels[udid] = t
-		m.tunnels[udid] = t
-		m.mux.Unlock()
+		if version.Major() >= 17 {
+			t, err := m.startTunnel(ctx, d)
+			if err != nil {
+				log.WithField("udid", udid).
+					WithError(err).
+					Warn("failed to start tunnel")
+				continue
+			}
+			m.mux.Lock()
+			localTunnels[udid] = t
+			m.tunnels[udid] = t
+			m.mux.Unlock()
+		}
 	}
+
 	for udid, tun := range localTunnels {
 		idx := slices.ContainsFunc(devices.DeviceList, func(entry ios.DeviceEntry) bool {
 			return entry.Properties.SerialNumber == udid

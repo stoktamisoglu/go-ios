@@ -2145,7 +2145,7 @@ func startTunnel(ctx context.Context, recordsPath string, tunnelInfoPort int, us
 	tm := tunnel.NewTunnelManager(pm, userspaceTUN)
 
 	go func() {
-		ticker := time.NewTicker(1 * time.Second)
+		ticker := time.NewTicker(3 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {

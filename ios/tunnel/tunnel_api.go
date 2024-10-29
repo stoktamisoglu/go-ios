@@ -272,16 +272,21 @@ func (m *TunnelManager) UpdateTunnels(ctx context.Context) error {
 		if _, exists := localTunnels[udid]; exists {
 			continue
 		}
-		if m.userspaceTUN && d.UserspaceTUNPort == 0 {
-			d.UserspaceTUNPort = ios.HttpApiPort() + m.portOffset
-			m.portOffset++
-		}
+
 		version, err := ios.GetProductVersion(d)
 		if err != nil {
 			return fmt.Errorf("startTunnel: failed to get device version: %w", err)
 		}
 		if version.Major() >= 17 {
-			t, err := m.startTunnel(ctx, d)
+
+			m.mux.Lock()
+			if m.userspaceTUN && d.UserspaceTUNPort == 0 {
+				d.UserspaceTUNPort = ios.HttpApiPort() + m.portOffset
+				m.portOffset++
+			}
+			m.mux.Unlock()
+
+			t, err := m.startTunnel(ctx, d, version)
 			if err != nil {
 				log.WithField("udid", udid).
 					WithError(err).
@@ -329,14 +334,18 @@ func (m *TunnelManager) stopTunnel(t Tunnel) error {
 	return t.Close()
 }
 
-func (m *TunnelManager) startTunnel(ctx context.Context, device ios.DeviceEntry) (Tunnel, error) {
+func (m *TunnelManager) startTunnel(ctx context.Context, device ios.DeviceEntry, version *semver.Version) (Tunnel, error) {
 	log.WithField("udid", device.Properties.SerialNumber).Info("start tunnel")
 	startTunnelCtx, cancel := context.WithTimeout(ctx, m.startTunnelTimeout)
 	defer cancel()
-	version, err := ios.GetProductVersion(device)
-	if err != nil {
-		return Tunnel{}, fmt.Errorf("startTunnel: failed to get device version: %w", err)
-	}
+
+	// m.mux.Lock()
+	// version, err := ios.GetProductVersion(device)
+	// m.mux.Unlock()
+
+	// if err != nil {
+	// 	return Tunnel{}, fmt.Errorf("startTunnel: failed to get device version: %w", err)
+	// }
 	t, err := m.ts.StartTunnel(startTunnelCtx, device, m.pm, version, m.userspaceTUN)
 	if err != nil {
 		return Tunnel{}, err

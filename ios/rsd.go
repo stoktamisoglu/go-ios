@@ -4,20 +4,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"strconv"
+	"sync"
 
 	"github.com/danielpaulus/go-ios/ios/http"
 	"github.com/danielpaulus/go-ios/ios/xpc"
 	log "github.com/sirupsen/logrus"
 )
 
+// _requestsMap stores a mutex for every request attempt to the trio formed by address, port, and TUN port. This allows to make sure that no more than one request is made at a time to a given trio, since doing so can lead to stuck requests and, therefore, stuck programs and/or goroutine leaks.
+var _requestsMap = sync.Map{}
+
 // RsdPortProvider is an interface to get a port for a service, or a service for a port from the Remote Service Discovery on the device.
 // Used in iOS17+
 type RsdPortProvider interface {
 	GetPort(service string) int
 	GetService(p int) string
-	GetServices() map[string]RsdServiceEntry
 }
 
 type RsdPortProviderJson map[string]service
@@ -68,21 +70,6 @@ func (r RsdPortProviderJson) GetService(p int) string {
 		}
 	}
 	return ""
-}
-
-func (r RsdPortProviderJson) GetServices() (services map[string]RsdServiceEntry) {
-	services = make(map[string]RsdServiceEntry, len(r))
-	for name, s := range r {
-		port, err := strconv.ParseInt(s.Port, 10, 64)
-		if err != nil {
-			log.Errorf("GetService: failed to parse port: %v", err)
-			continue
-		}
-
-		services[name] = RsdServiceEntry{Port: uint32(port)}
-	}
-
-	return
 }
 
 // RsdCheckin sends a plist encoded message with the request 'RSDCheckin' to the device.
@@ -156,43 +143,32 @@ func (r RsdHandshakeResponse) GetPort(service string) int {
 	return 0
 }
 
-func (r RsdHandshakeResponse) GetServices() map[string]RsdServiceEntry {
-	return r.Services
+// NewWithAddr creates a new RsdService with the given address and port 58783 using a HTTP2 based XPC connection.
+func NewWithAddr(addr string, d DeviceEntry) (RsdService, error) {
+	return NewWithAddrPort(addr, port, d)
 }
 
-// NewWithAddrPort creates a new RsdService with the given address and port 58783 using a HTTP2 based XPC connection,
-// connecting to an operating system level TUN device.
-func NewWithAddrPort(addr string, port int) (RsdService, error) {
-	conn, err := connectTUN(addr, port)
+// NewWithAddrPort creates a new RsdService with the given address and port using a HTTP2 based XPC connection.
+func NewWithAddrPort(addr string, port int, d DeviceEntry) (RsdService, error) {
+	key := fmt.Sprintf("%s-%d-%d", addr, port, d.UserspaceTUNPort)
+
+	mutex, _ := _requestsMap.LoadOrStore(key, &sync.Mutex{})
+
+	mutex.(*sync.Mutex).Lock()
+	defer mutex.(*sync.Mutex).Unlock()
+
+	conn, err := ConnectTUNDevice(addr, port, d)
 	if err != nil {
 		return RsdService{}, fmt.Errorf("NewWithAddrPort: failed to connect to device: %w", err)
 	}
-	return newRsdServiceFromTcpConn(conn)
-}
-
-// NewWithAddrDevice creates a new RsdService with the given address and port 58783 using a HTTP2 based XPC connection.
-func NewWithAddrDevice(addr string, d DeviceEntry) (RsdService, error) {
-	return NewWithAddrPortDevice(addr, port, d)
-}
-
-// NewWithAddrPortDevice creates a new RsdService with the given address and port using a HTTP2 based XPC connection.
-func NewWithAddrPortDevice(addr string, port int, d DeviceEntry) (RsdService, error) {
-	conn, err := ConnectTUNDevice(addr, port, d)
-	if err != nil {
-		return RsdService{}, fmt.Errorf("NewWithAddrPortTUNDevice: failed to connect to device: %w", err)
-	}
-	return newRsdServiceFromTcpConn(conn)
-}
-
-func newRsdServiceFromTcpConn(conn *net.TCPConn) (RsdService, error) {
 	h, err := http.NewHttpConnection(conn)
 	if err != nil {
-		return RsdService{}, fmt.Errorf("newRsdServiceFromTcpConn: failed to connect to http2: %w", err)
+		return RsdService{}, fmt.Errorf("NewWithAddrPort: failed to connect to http2: %w", err)
 	}
 
 	x, err := CreateXpcConnection(h)
 	if err != nil {
-		return RsdService{}, fmt.Errorf("newRsdServiceFromTcpConn: failed to create xpc connection: %w", err)
+		return RsdService{}, fmt.Errorf("NewWithAddrPort: failed to create xpc connection: %w", err)
 	}
 
 	return RsdService{
